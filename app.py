@@ -1,70 +1,68 @@
 import streamlit as st
 from transformers import pipeline
 
-st.set_page_config(
-    page_title="Fake News Detector",
-    page_icon="📰"
-)
+st.set_page_config(page_title="Fake News Detector", page_icon="📰", layout="centered")
 
-st.title("📰 Fake News & Misinformation Detector")
-st.write("Transformer-based fake news classification system")
-
-
+# ---------- Load model (cached so it only loads once per session) ----------
 @st.cache_resource
-def load_model():
+def load_classifier():
+    # Multilingual model — works across many regional languages (Hindi, Bengali,
+    # Tamil, Spanish, Arabic, etc.), no API key required, fully local inference.
     return pipeline(
-        "text-classification",
-        model="mrm8488/bert-tiny-finetuned-fake-news-detection",
-        return_all_scores=True
+        "zero-shot-classification",
+        model="MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
     )
 
+classifier = load_classifier()
 
-classifier = load_model()
+LABELS = ["credible news", "misinformation", "satire", "propaganda"]
 
+# ---------- UI ----------
+st.title("📰 Fake News & Misinformation Detector")
+st.caption("Multilingual transformer model — works on regional social media text, news snippets, or posts.")
 
-news = st.text_area(
-    "Enter news text:",
-    height=150
+text_input = st.text_area(
+    "Paste a social media post, headline, or news snippet:",
+    height=180,
+    placeholder="e.g. 'Breaking: Government announces free electricity for all farmers starting tomorrow...'"
 )
 
+col1, col2 = st.columns(2)
+with col1:
+    analyze_btn = st.button("🔍 Analyze", use_container_width=True)
+with col2:
+    clear_btn = st.button("🧹 Clear", use_container_width=True)
 
-if st.button("🔍 Analyze"):
+if clear_btn:
+    st.rerun()
 
-    if news.strip():
+if analyze_btn:
+    if not text_input.strip():
+        st.warning("Please paste some text first.")
+    else:
+        with st.spinner("Analyzing content..."):
+            result = classifier(text_input, candidate_labels=LABELS, multi_label=False)
 
-        with st.spinner("Analyzing..."):
-
-            output = classifier(news)
-
-            # Remove extra nesting
-            scores = output[0]
-
-            best = max(
-                scores,
-                key=lambda x: x["score"]
-            )
-
-            label = best["label"]
-            confidence = best["score"] * 100
-
-
-            if label == "LABEL_1":
-                prediction = "Fake News ❌"
-            else:
-                prediction = "Real News ✅"
-
+        top_label = result["labels"][0]
+        top_score = result["scores"][0]
 
         st.subheader("Result")
-
-        if "Fake" in prediction:
-            st.error(prediction)
+        if top_label == "credible news":
+            st.success(f"✅ Likely **{top_label.upper()}** ({top_score*100:.1f}% confidence)")
         else:
-            st.success(prediction)
+            st.error(f"⚠️ Likely **{top_label.upper()}** ({top_score*100:.1f}% confidence)")
 
-        st.metric(
-            "Confidence",
-            f"{confidence:.2f}%"
+        st.markdown("### Confidence Breakdown")
+        for label, score in zip(result["labels"], result["scores"]):
+            st.write(f"**{label.title()}**")
+            st.progress(float(score))
+
+        st.markdown("---")
+        st.caption(
+            "⚠️ This tool gives a probabilistic estimate based on language patterns, "
+            "not a verified fact-check. Always cross-check with trusted news sources "
+            "or fact-checking organizations before sharing."
         )
 
-    else:
-        st.warning("Please enter text.")
+st.markdown("---")
+st.caption("Built with 🤗 Transformers (mDeBERTa-v3, multilingual) + Streamlit — no API key required.")
