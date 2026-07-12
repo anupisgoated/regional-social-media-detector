@@ -1,15 +1,13 @@
 import streamlit as st
 from transformers import pipeline
 
-
 st.set_page_config(
     page_title="Fake News Detector",
     page_icon="📰"
 )
 
-
-st.title("📰 Fake News Detection using Transformer")
-st.write("Enter a news statement to classify it.")
+st.title("📰 Fake News & Misinformation Detector")
+st.write("Transformer-based fake news classification system")
 
 
 @st.cache_resource
@@ -24,48 +22,49 @@ def load_model():
 classifier = load_model()
 
 
-text = st.text_area(
-    "News text:",
+news = st.text_area(
+    "Enter news text:",
     height=150
 )
 
 
-if st.button("Analyze"):
+if st.button("🔍 Analyze"):
 
-    if text.strip():
+    if news.strip():
 
-        result = classifier(text)[0]
+        with st.spinner("Analyzing..."):
 
-        # Find highest probability class
-        best = max(
-            result,
-            key=lambda x: x["score"]
-        )
+            output = classifier(news)
 
-        label = best["label"]
-        confidence = best["score"] * 100
+            # Remove extra nesting
+            scores = output[0]
+
+            best = max(
+                scores,
+                key=lambda x: x["score"]
+            )
+
+            label = best["label"]
+            confidence = best["score"] * 100
 
 
-        # Convert labels
-        if label in ["LABEL_1", "1"]:
-            output = "Fake News ❌"
-        elif label in ["LABEL_0", "0"]:
-            output = "Real News ✅"
+            if label == "LABEL_1":
+                prediction = "Fake News ❌"
+            else:
+                prediction = "Real News ✅"
+
+
+        st.subheader("Result")
+
+        if "Fake" in prediction:
+            st.error(prediction)
         else:
-            output = label
+            st.success(prediction)
 
-
-        st.subheader("Prediction")
-
-        if "Fake" in output:
-            st.error(output)
-        else:
-            st.success(output)
-
-
-        st.write(
-            f"Confidence: {confidence:.2f}%"
+        st.metric(
+            "Confidence",
+            f"{confidence:.2f}%"
         )
 
     else:
-        st.warning("Enter some text first.")
+        st.warning("Please enter text.")
