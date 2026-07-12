@@ -73,8 +73,9 @@ if execution_trigger:
                 softmax_probabilities = torch.softmax(tensor_logits, dim=1).flatten().tolist()
             
             # Model output labels mapping: Class 0 is Authentic, Class 1 is Fabricated
-            base_transformer_fake_score = softmax_probabilities
+                    base_transformer_fake_score = softmax_probabilities[1]
             
+         
             # Step 2: Gemini API Integration Validation Layer
             api_key_check = os.environ.get("GEMINI_API_KEY")
             gemini_fake_score = 0.5
@@ -94,7 +95,7 @@ if execution_trigger:
                     pass
             
             # Step 3: Combined Weighted Average Resolution Formula
-            final_fake_weight = (base_transformer_fake_score * 0.40) + (gemini_fake_score * 0.60)
+            final_fake_weight = (base_transformer_fake_score[1] * 0.40) + (gemini_fake_score * 0.60)
             final_real_weight = 1.0 - final_fake_weight
             
             # Visual Probability Charts Component mapping
