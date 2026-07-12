@@ -1,24 +1,24 @@
 """
 Misinformation & Fake News Detector for Regional Social Media
 ================================================================
-A Streamlit application combining:
-  1. Transformer-based linguistic style analysis (zero-shot classification)
-  2. Lightweight fact cross-referencing via Wikipedia (keyless, public API)
+Combines:
+  1. Transformer-based linguistic style analysis (zero-shot, local, keyless)
+  2. Gemini API-based real fact verification (free tier, requires API key)
 
-No API keys required. All inference runs locally or against public,
-unauthenticated endpoints.
+The API key is NEVER hardcoded. It is read from Streamlit secrets
+(st.secrets) or entered securely by the user in the sidebar.
 
 Author: (your name)
 """
 
 import re
 import logging
-import requests
 from datetime import datetime
 from dataclasses import dataclass, field
 
 import streamlit as st
 from transformers import pipeline
+import google.generativeai as genai
 
 # ============================================================
 # LOGGING CONFIG
@@ -34,11 +34,11 @@ logger = logging.getLogger("misinfo_detector")
 # ============================================================
 APP_TITLE = "Misinformation Detector"
 APP_ICON = "🛡️"
-MODEL_NAME = "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
+STYLE_MODEL_NAME = "MoritzLaurer/mDeBERTa-v3-base-mnli-xnli"
 STYLE_LABELS = ["credible news", "misinformation", "satire", "propaganda"]
 CONFIDENCE_THRESHOLD = 0.45
-WIKIPEDIA_API_URL = "https://en.wikipedia.org/w/api.php"
 MAX_HISTORY_ITEMS = 25
+GEMINI_MODEL_NAME = "gemini-1.5-flash"  # fast + free-tier friendly
 
 LABEL_META = {
     "credible news":  {"emoji": "✅", "color": "#16a34a"},
@@ -81,33 +81,51 @@ class StyleResult:
     all_scores: list
 
 @dataclass
-class FactCheckHit:
-    entity: str
-    summary: str
-    url: str
+class FactVerdict:
+    verdict: str          # "True", "False", "Partially True", "Unverifiable"
+    explanation: str
+    confidence: str        # "High", "Medium", "Low"
 
 @dataclass
 class AnalysisRecord:
     text: str
     timestamp: str
     style: StyleResult
-    facts: list = field(default_factory=list)
+    fact: FactVerdict = None
 
 # ============================================================
-# MODEL LOADING
+# API KEY HANDLING  (Google Gemini — free tier)
+# ============================================================
+def get_gemini_api_key() -> str:
+    """
+    Retrieves the Gemini API key from Streamlit secrets first
+    (recommended for deployment), falling back to a sidebar input
+    for local/manual testing. The key is never stored in code.
+    """
+    # Preferred: Streamlit Cloud secrets (Settings -> Secrets ->
+    # GOOGLE_API_KEY = "your-key-here")
+    if "GOOGLE_API_KEY" in st.secrets:
+        return st.secrets["GOOGLE_API_KEY"]
+
+    # Fallback: manual entry in sidebar (session-only, not saved anywhere)
+    return st.session_state.get("manual_api_key", "")
+
+
+def configure_gemini(api_key: str):
+    genai.configure(api_key=api_key)
+    return genai.GenerativeModel(GEMINI_MODEL_NAME)
+
+
+# ============================================================
+# MODEL LOADING — STYLE ANALYSIS (local, keyless)
 # ============================================================
 @st.cache_resource(show_spinner=False)
 def load_classifier():
-    """
-    Loads the multilingual zero-shot classifier from Hugging Face Hub.
-    Public model — no authentication or API key required.
-    """
-    logger.info("Loading zero-shot classification model: %s", MODEL_NAME)
-    return pipeline("zero-shot-classification", model=MODEL_NAME)
+    logger.info("Loading zero-shot classification model: %s", STYLE_MODEL_NAME)
+    return pipeline("zero-shot-classification", model=STYLE_MODEL_NAME)
 
 
 def analyze_style(classifier, text: str) -> StyleResult:
-    """Runs zero-shot style classification on the given text."""
     result = classifier(text, candidate_labels=STYLE_LABELS, multi_label=False)
     return StyleResult(
         top_label=result["labels"][0],
@@ -117,63 +135,54 @@ def analyze_style(classifier, text: str) -> StyleResult:
     )
 
 # ============================================================
-# FACT CROSS-REFERENCE MODULE (Wikipedia, keyless, public)
+# FACT VERIFICATION MODULE (Gemini API)
 # ============================================================
-def extract_candidate_entities(text: str) -> list:
+FACT_CHECK_PROMPT = """You are a careful fact-checking assistant. Analyze the following claim/post \
+for factual accuracy based on real-world knowledge.
+
+Claim:
+\"\"\"{text}\"\"\"
+
+Respond in EXACTLY this format, with no extra commentary:
+Verdict: <True | False | Partially True | Unverifiable>
+Confidence: <High | Medium | Low>
+Explanation: <2-3 sentence explanation of why, citing the relevant real facts>
+"""
+
+def run_fact_verification(model, text: str) -> FactVerdict:
     """
-    Extracts likely proper-noun phrases (people, places, organizations, events)
-    from the text using simple capitalization heuristics.
-    This is a lightweight, dependency-free alternative to full NER.
+    Sends the text to Gemini for real factual verification.
+    Unlike the local style model, Gemini has actual world knowledge
+    and can correctly judge claims like "Messi won the 2022 World Cup".
     """
-    # Matches sequences of capitalized words (e.g. "Lionel Messi", "World Cup")
-    candidates = re.findall(r"\b[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){0,3}\b", text)
-    # Deduplicate while preserving order, drop very short/common words
-    seen = set()
-    filtered = []
-    for c in candidates:
-        c_clean = c.strip()
-        if c_clean.lower() not in seen and len(c_clean) > 2:
-            seen.add(c_clean.lower())
-            filtered.append(c_clean)
-    return filtered[:5]  # limit to top 5 to keep requests fast
+    prompt = FACT_CHECK_PROMPT.format(text=text)
+    response = model.generate_content(prompt)
+    raw = response.text.strip()
+
+    verdict = "Unverifiable"
+    confidence = "Low"
+    explanation = raw
+
+    verdict_match = re.search(r"Verdict:\s*(.+)", raw)
+    confidence_match = re.search(r"Confidence:\s*(.+)", raw)
+    explanation_match = re.search(r"Explanation:\s*(.+)", raw, re.DOTALL)
+
+    if verdict_match:
+        verdict = verdict_match.group(1).strip()
+    if confidence_match:
+        confidence = confidence_match.group(1).strip()
+    if explanation_match:
+        explanation = explanation_match.group(1).strip()
+
+    return FactVerdict(verdict=verdict, explanation=explanation, confidence=confidence)
 
 
-def fetch_wikipedia_summary(entity: str) -> FactCheckHit | None:
-    """
-    Queries Wikipedia's public REST API for a summary of the given entity.
-    No API key required — this is a fully public, unauthenticated endpoint.
-    """
-    try:
-        response = requests.get(
-            f"https://en.wikipedia.org/api/rest_v1/page/summary/{entity.replace(' ', '_')}",
-            timeout=6,
-            headers={"User-Agent": "MisinfoDetectorApp/1.0"}
-        )
-        if response.status_code == 200:
-            data = response.json()
-            if "extract" in data and data.get("type") != "disambiguation":
-                return FactCheckHit(
-                    entity=entity,
-                    summary=data["extract"],
-                    url=data.get("content_urls", {}).get("desktop", {}).get("page", "")
-                )
-    except requests.RequestException as e:
-        logger.warning("Wikipedia lookup failed for '%s': %s", entity, e)
-    return None
-
-
-def run_fact_cross_reference(text: str) -> list:
-    """
-    Extracts entities from text and fetches reference summaries from Wikipedia
-    so the user can manually verify claims against a real source.
-    """
-    entities = extract_candidate_entities(text)
-    hits = []
-    for entity in entities:
-        hit = fetch_wikipedia_summary(entity)
-        if hit:
-            hits.append(hit)
-    return hits
+VERDICT_META = {
+    "True":            {"emoji": "✅", "color": "#16a34a"},
+    "False":           {"emoji": "❌", "color": "#dc2626"},
+    "Partially True":  {"emoji": "🟡", "color": "#ca8a04"},
+    "Unverifiable":    {"emoji": "❔", "color": "#6b7280"},
+}
 
 # ============================================================
 # SESSION STATE
@@ -195,28 +204,39 @@ with st.sidebar:
         "or news snippets, particularly for **regional / multilingual content**:"
     )
     st.markdown(
-        "1. **Style Analysis** — a transformer model estimates whether the "
-        "*writing style* resembles credible news, misinformation, satire, "
+        "1. **Style Analysis** — a local transformer model estimates whether "
+        "the *writing style* resembles credible news, misinformation, satire, "
         "or propaganda.\n"
-        "2. **Fact Cross-Reference** — pulls real Wikipedia summaries for "
-        "named entities in the text (people, places, events) so you can "
-        "manually verify specific claims."
+        "2. **Fact Verification** — Google Gemini checks the claim against "
+        "real-world knowledge and returns a True/False/Partially True verdict."
     )
     st.markdown("---")
-    st.subheader("⚙️ Technical details")
-    st.write(
-        f"- Style model: `{MODEL_NAME}`\n"
-        "- Fact source: Wikipedia REST API (public, keyless)\n"
-        "- 100+ languages supported for style analysis\n"
-        "- No data stored server-side beyond your session"
-    )
+
+    st.subheader("🔑 API Key (Google Gemini — free)")
+    api_key_from_secrets = "GOOGLE_API_KEY" in st.secrets
+
+    if api_key_from_secrets:
+        st.success("API key loaded from Streamlit secrets ✅")
+    else:
+        st.info(
+            "No key found in secrets. Paste your free Gemini API key below "
+            "for this session, or add it permanently in **Settings → Secrets** "
+            "on Streamlit Cloud as `GOOGLE_API_KEY`."
+        )
+        manual_key = st.text_input(
+            "Paste your Gemini API key",
+            type="password",
+            help="Get a free key at https://aistudio.google.com/apikey"
+        )
+        if manual_key:
+            st.session_state["manual_api_key"] = manual_key
+            st.success("Key set for this session.")
+
     st.markdown("---")
     st.warning(
-        "**Important limitation:** Style Analysis judges *how text is written*, "
-        "not whether it's true. A factually correct sentence can score as "
-        "'misinformation' if it's phrased unusually, and a well-written lie "
-        "can score as 'credible'. Always check the Fact Cross-Reference panel "
-        "and independent sources before drawing conclusions.",
+        "**Note:** Style Analysis judges *how* text is written, not whether "
+        "it's true. Fact Verification (Gemini) checks the actual claim. "
+        "Use both together for the most reliable read.",
         icon="⚠️"
     )
 
@@ -225,7 +245,7 @@ with st.sidebar:
 # ============================================================
 st.markdown(f'<p class="main-header">{APP_ICON} {APP_TITLE}</p>', unsafe_allow_html=True)
 st.markdown(
-    '<p class="sub-header">Style analysis + real fact cross-referencing for regional social media content — multilingual and keyless.</p>',
+    '<p class="sub-header">Style analysis + Gemini-powered fact verification for regional social media content.</p>',
     unsafe_allow_html=True
 )
 
@@ -251,32 +271,54 @@ with tab_analyze:
         st.rerun()
 
     if analyze_btn:
+        api_key = get_gemini_api_key()
+
         if not text_input.strip():
             st.warning("Please enter some text before analyzing.")
         elif len(text_input.strip()) < 10:
             st.warning("Text is too short for reliable analysis. Please provide a full sentence or more.")
+        elif not api_key:
+            st.error(
+                "No Gemini API key found. Add one in the sidebar, or set "
+                "`GOOGLE_API_KEY` in Streamlit Cloud secrets, to enable fact verification."
+            )
         else:
             try:
-                with st.spinner("Loading model (first run may take a moment)..."):
+                with st.spinner("Loading style model (first run may take a moment)..."):
                     classifier = load_classifier()
 
                 with st.spinner("Running style analysis..."):
                     style_result = analyze_style(classifier, text_input)
 
-                with st.spinner("Cross-referencing facts against Wikipedia..."):
-                    fact_hits = run_fact_cross_reference(text_input)
+                with st.spinner("Verifying facts with Gemini..."):
+                    gemini_model = configure_gemini(api_key)
+                    fact_result = run_fact_verification(gemini_model, text_input)
 
                 record = AnalysisRecord(
                     text=text_input,
                     timestamp=datetime.now().strftime("%d %b %Y, %H:%M"),
                     style=style_result,
-                    facts=fact_hits
+                    fact=fact_result
                 )
                 add_to_history(record)
 
+                # ---------- FACT VERIFICATION OUTPUT (shown first — most important) ----------
+                st.markdown("### 🧠 Fact Verification (Gemini)")
+                vmeta = VERDICT_META.get(fact_result.verdict, VERDICT_META["Unverifiable"])
+                st.markdown(
+                    f"""
+                    <div class="result-card" style="background-color:{vmeta['color']}15; border-left: 5px solid {vmeta['color']};">
+                        <span style="font-size:1.3rem;">{vmeta['emoji']} <b>{fact_result.verdict}</b></span>
+                        <span style="color:#6b7280;"> · Confidence: {fact_result.confidence}</span><br><br>
+                        <span>{fact_result.explanation}</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True
+                )
+
                 # ---------- STYLE ANALYSIS OUTPUT ----------
                 st.markdown("### 📊 Style Analysis")
-                st.caption("Estimates writing style — does NOT verify factual accuracy.")
+                st.caption("Estimates writing style — separate from factual accuracy above.")
 
                 meta = LABEL_META[style_result.top_label]
                 if style_result.top_score < CONFIDENCE_THRESHOLD:
@@ -295,7 +337,7 @@ with tab_analyze:
                         unsafe_allow_html=True
                     )
 
-                with st.expander("Full confidence breakdown"):
+                with st.expander("Full style confidence breakdown"):
                     for label, score in zip(style_result.all_labels, style_result.all_scores):
                         c1, c2 = st.columns([1, 3])
                         with c1:
@@ -303,42 +345,17 @@ with tab_analyze:
                         with c2:
                             st.progress(float(score), text=f"{score*100:.1f}%")
 
-                # ---------- FACT CROSS-REFERENCE OUTPUT ----------
-                st.markdown("### 📚 Fact Cross-Reference")
-                st.caption(
-                    "Real Wikipedia summaries for named entities detected in your text. "
-                    "Compare these against the claim to check accuracy."
-                )
-
-                if fact_hits:
-                    for hit in fact_hits:
-                        st.markdown(
-                            f"""
-                            <div class="fact-card">
-                                <b>🔎 {hit.entity}</b><br>
-                                <span style="color:#374151;">{hit.summary}</span><br>
-                                <a href="{hit.url}" target="_blank">Read more on Wikipedia →</a>
-                            </div>
-                            """,
-                            unsafe_allow_html=True
-                        )
-                else:
-                    st.write(
-                        "No recognizable named entities were found, or no matching "
-                        "Wikipedia articles were available for cross-referencing."
-                    )
-
                 st.markdown("---")
                 st.caption(
-                    "⚠️ **Disclaimer:** This tool provides an automated estimate and reference "
-                    "material — it is not a certified fact-check. For verified claims, consult "
-                    "trusted fact-checking organizations such as BOOM, Alt News, or PolitiFact."
+                    "⚠️ **Disclaimer:** Automated analysis, not a certified fact-check. "
+                    "For high-stakes claims, cross-check with trusted fact-checking "
+                    "organizations such as BOOM, Alt News, or PolitiFact."
                 )
 
             except Exception as e:
                 logger.exception("Analysis failed")
                 st.error(f"Something went wrong while analyzing the text: {e}")
-                st.caption("Try refreshing the page or shortening the input text.")
+                st.caption("Check that your API key is valid, or try again in a moment.")
 
 # ============================================================
 # TAB 2: HISTORY
@@ -348,19 +365,20 @@ with tab_history:
     if not st.session_state.history:
         st.write("No analyses yet in this session.")
     else:
-        for i, record in enumerate(st.session_state.history):
+        for record in st.session_state.history:
             meta = LABEL_META[record.style.top_label]
-            with st.container():
-                st.markdown(
-                    f"""
-                    <div class="history-item">
-                        <b>{meta['emoji']} {record.style.top_label.title()}</b>
-                        ({record.style.top_score*100:.1f}%) — <i>{record.timestamp}</i><br>
-                        <span style="color:#6b7280;">{record.text[:140]}{"..." if len(record.text) > 140 else ""}</span>
-                    </div>
-                    """,
-                    unsafe_allow_html=True
-                )
+            vmeta = VERDICT_META.get(record.fact.verdict, VERDICT_META["Unverifiable"]) if record.fact else VERDICT_META["Unverifiable"]
+            st.markdown(
+                f"""
+                <div class="history-item">
+                    <b>{vmeta['emoji']} {record.fact.verdict if record.fact else 'N/A'}</b>
+                    &nbsp;|&nbsp; {meta['emoji']} {record.style.top_label.title()}
+                    ({record.style.top_score*100:.1f}%) — <i>{record.timestamp}</i><br>
+                    <span style="color:#6b7280;">{record.text[:140]}{"..." if len(record.text) > 140 else ""}</span>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
         if st.button("🗑️ Clear history"):
             st.session_state.history = []
             st.rerun()
@@ -371,39 +389,39 @@ with tab_history:
 with tab_about:
     st.markdown("### 📘 Methodology")
     st.write(
-        "**1. Style Analysis (Zero-Shot Classification)**\n\n"
-        f"Uses `{MODEL_NAME}`, a multilingual model trained on natural language "
-        "inference across 100+ languages. Given a piece of text and a set of "
-        "candidate labels, it estimates how well the text's phrasing and framing "
-        "align with each label — without any task-specific fine-tuning."
+        "**1. Style Analysis (Zero-Shot Classification, local)**\n\n"
+        f"Uses `{STYLE_MODEL_NAME}`, a multilingual model covering 100+ languages. "
+        "Estimates whether the *phrasing and framing* of text resembles credible "
+        "news, misinformation, satire, or propaganda — without checking facts."
     )
     st.write(
-        "**2. Fact Cross-Reference (Wikipedia)**\n\n"
-        "Extracts capitalized multi-word phrases as candidate named entities "
-        "(a lightweight heuristic, not full NER), then queries Wikipedia's public "
-        "summary API for each. This surfaces real reference information next to "
-        "the claim, so the user — not the model — makes the final judgment on accuracy."
+        "**2. Fact Verification (Google Gemini API)**\n\n"
+        f"Uses Google's `{GEMINI_MODEL_NAME}` model, which has real-world "
+        "knowledge, to evaluate the actual truth of the claim and return a "
+        "verdict: True, False, Partially True, or Unverifiable — with an "
+        "explanation and confidence level."
     )
     st.write(
-        "**Why this matters:** Zero-shot style classifiers cannot verify facts. "
-        "They have no access to a knowledge base and cannot distinguish a true "
-        "statement from a false one if both are phrased similarly. Combining a "
-        "style signal with a real, independent fact source gives a more honest "
-        "and useful result than either alone."
+        "**Why combine both?** Style analysis alone cannot tell true from "
+        "false statements written in a similar tone. Fact verification alone "
+        "doesn't capture manipulative *framing* (e.g. technically true but "
+        "misleading headlines). Together, they give a fuller picture."
     )
     st.markdown("---")
     st.write(
-        "**Suggested next step for production use:** fine-tune the style model "
-        "on a labeled regional dataset (e.g. IFND, FakeNewsNet, or a custom-labeled "
-        "corpus of regional social media posts) to better capture local slang, "
-        "code-mixing, and platform-specific patterns."
+        "**Getting a free Gemini API key:**\n"
+        "1. Go to https://aistudio.google.com/apikey\n"
+        "2. Sign in with a Google account\n"
+        "3. Click **Create API key** (free tier, no billing required for basic use)\n"
+        "4. Add it in Streamlit Cloud under **Settings → Secrets** as:\n"
     )
+    st.code('GOOGLE_API_KEY = "your-key-here"', language="toml")
 
 # ============================================================
 # FOOTER
 # ============================================================
 st.markdown(
-    f'<p class="footer-note">{APP_ICON} {APP_TITLE} · Built with 🤗 Transformers + Streamlit + Wikipedia API · '
-    "No API key required · No data stored server-side</p>",
+    f'<p class="footer-note">{APP_ICON} {APP_TITLE} · Built with 🤗 Transformers + Streamlit + Google Gemini · '
+    "API key stored securely via Streamlit secrets</p>",
     unsafe_allow_html=True
-                        )
+)
