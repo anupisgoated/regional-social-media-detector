@@ -1,59 +1,71 @@
 import streamlit as st
 from transformers import pipeline
 
-# Page setup
+
 st.set_page_config(
     page_title="Fake News Detector",
-    page_icon="📰",
-    layout="centered"
+    page_icon="📰"
 )
 
-st.title("📰 Fake News & Misinformation Detector")
-st.write(
-    "AI-based detection system using a Transformer NLP model. "
-    "Enter a news statement to analyze it."
-)
 
-# Load model
+st.title("📰 Fake News Detection using Transformer")
+st.write("Enter a news statement to classify it.")
+
+
 @st.cache_resource
 def load_model():
     return pipeline(
         "text-classification",
-        model="mrm8488/bert-tiny-finetuned-fake-news-detection"
+        model="mrm8488/bert-tiny-finetuned-fake-news-detection",
+        return_all_scores=True
     )
+
 
 classifier = load_model()
 
-# Input box
-news_text = st.text_area(
-    "Enter a news article or social media post:",
-    height=150,
-    placeholder="Example: Scientists discovered a new planet..."
+
+text = st.text_area(
+    "News text:",
+    height=150
 )
 
-if st.button("Analyze News"):
-    if news_text.strip():
 
-        with st.spinner("Analyzing with Transformer model..."):
-            result = classifier(news_text)[0]
+if st.button("Analyze"):
 
-        label = result["label"]
-        confidence = result["score"] * 100
+    if text.strip():
 
-        if "REAL" in label.upper():
-            st.success(f"Prediction: {label}")
-        else:
-            st.error(f"Prediction: {label}")
+        result = classifier(text)[0]
 
-        st.metric(
-            "Confidence Score",
-            f"{confidence:.2f}%"
+        # Find highest probability class
+        best = max(
+            result,
+            key=lambda x: x["score"]
         )
 
-        st.info(
-            "Note: AI predictions are not perfect. "
-            "Always verify important information using trusted sources."
+        label = best["label"]
+        confidence = best["score"] * 100
+
+
+        # Convert labels
+        if label in ["LABEL_1", "1"]:
+            output = "Fake News ❌"
+        elif label in ["LABEL_0", "0"]:
+            output = "Real News ✅"
+        else:
+            output = label
+
+
+        st.subheader("Prediction")
+
+        if "Fake" in output:
+            st.error(output)
+        else:
+            st.success(output)
+
+
+        st.write(
+            f"Confidence: {confidence:.2f}%"
         )
 
     else:
-        st.warning("Please enter some text first.")
+        st.warning("Enter some text first.")
