@@ -10,36 +10,36 @@ st.set_page_config(page_title="Regional Misinformation Platform", layout="center
 
 # Premium Mobile Glassmorphic Theme Injection
 st.markdown("""
-    <style>
-    .stApp { background-color: #0b0f19; color: #f1f5f9; }
-    .title-banner {
-        background: linear-gradient(135deg, #1e1b4b 0%, #311042 100%);
-        padding: 20px;
-        border-radius: 12px;
-        border: 1px solid #4338ca;
-        margin-bottom: 15px;
-    }
-    div.stButton > button {
-        width: 100%;
-        background: linear-gradient(90deg, #6366f1 0%, #a855f7 100%) !important;
-        color: white !important;
-        font-weight: 700 !important;
-        border: none !important;
-        height: 3.5em;
-        border-radius: 8px;
-    }
-    .verdict-box { padding: 20px; border-radius: 10px; margin-top: 15px; border-left: 6px solid; }
-    .verdict-fake { background: rgba(239, 68, 68, 0.08); border-left-color: #ef4444; }
-    .verdict-real { background: rgba(16, 185, 129, 0.08); border-left-color: #10b981; }
-    </style>
+<style>
+.stApp { background-color: #0b0f19; color: #f1f5f9; }
+.title-banner {
+    background: linear-gradient(135deg, #1e1b4b 0%, #311042 100%);
+    padding: 20px;
+    border-radius: 12px;
+    border: 1px solid #4338ca;
+    margin-bottom: 15px;
+}
+div.stButton > button {
+    width: 100%;
+    background: linear-gradient(90deg, #6366f1 0%, #a855f7 100%) !important;
+    color: white !important;
+    font-weight: 700 !important;
+    border: none !important;
+    height: 3.5em;
+    border-radius: 8px;
+}
+.verdict-box { padding: 20px; border-radius: 10px; margin-top: 15px; border-left: 6px solid; }
+.verdict-fake { background: rgba(239, 68, 68, 0.08); border-left-color: #ef4444; }
+.verdict-real { background: rgba(16, 185, 129, 0.08); border-left-color: #10b981; }
+</style>
 """, unsafe_allow_html=True)
 
 # App UI Header text
 st.markdown("""
-    <div class="title-banner">
-        <h2 style='margin:0; color:#ffffff; font-size: 20px;'>Fake News Detection on Regional Social Media</h2>
-        <p style='margin:5px 0 0 0; color:#9ca3af; font-size:12px;'>Transformer Architecture & Factual Verification Pipeline</p>
-    </div>
+<div class="title-banner">
+    <h2 style='margin:0; color:#ffffff; font-size: 20px;'>Fake News Detection on Regional Social Media</h2>
+    <p style='margin:5px 0 0 0; color:#9ca3af; font-size:12px;'>Transformer Architecture & Factual Verification Pipeline</p>
+</div>
 """, unsafe_allow_html=True)
 
 # Cached Transformer Pipeline Model Weights Loader
@@ -72,10 +72,9 @@ if execution_trigger:
                 tensor_logits = transformer_model(**tokenized_inputs).logits
                 softmax_probabilities = torch.softmax(tensor_logits, dim=1).flatten().tolist()
             
-            # Model output labels mapping: Class 0 is Authentic, Class 1 is Fabricated
-                    base_transformer_fake_score = softmax_probabilities[1]
+            # Extract probability element from the list index directly
+            base_transformer_fake_score = softmax_probabilities[1]
             
-         
             # Step 2: Gemini API Integration Validation Layer
             api_key_check = os.environ.get("GEMINI_API_KEY")
             gemini_fake_score = 0.5
@@ -95,7 +94,7 @@ if execution_trigger:
                     pass
             
             # Step 3: Combined Weighted Average Resolution Formula
-            final_fake_weight = (base_transformer_fake_score[1] * 0.40) + (gemini_fake_score * 0.60)
+            final_fake_weight = (base_transformer_fake_score * 0.40) + (gemini_fake_score * 0.60)
             final_real_weight = 1.0 - final_fake_weight
             
             # Visual Probability Charts Component mapping
@@ -111,4 +110,4 @@ if execution_trigger:
                 st.markdown(f'<div class="verdict-box verdict-fake"><h4 style="color:#ef4444;margin:0;">🚨 MISINFORMATION FLAG</h4><p style="font-size:13px;margin:5px 0;">{gemini_reasoning}</p><strong>Index: {final_fake_weight*100:.1f}% Inaccurate</strong></div>', unsafe_allow_html=True)
             else:
                 st.markdown(f'<div class="verdict-box verdict-real"><h4 style="color:#10b981;margin:0;">✅ VERIFIED ACCURATE</h4><p style="font-size:13px;margin:5px 0;">Content matches global factual parameters. {gemini_reasoning}</p><strong>Index: {final_real_weight*100:.1f}% Genuine</strong></div>', unsafe_allow_html=True)
-              
+                
