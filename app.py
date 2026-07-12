@@ -106,4 +106,4 @@ if execution_trigger:
                 st.markdown(f'<div class="verdict-box verdict-fake"><h4 style="color:#ef4444;margin:0;">🚨 MISINFORMATION RISK DETECTED</h4><p style="font-size:13px;margin:5px 0;">The ensemble models flagged linguistic bias and semantic structure matching rumor profiles.</p><strong>Index: {final_fake_weight*100:.1f}% Inaccurate</strong></div>', unsafe_allow_html=True)
             else:
                 st.markdown(f'<div class="verdict-box verdict-real"><h4 style="color:#10b981;margin:0;">✅ VERIFIED STRUCTURAL TRUTH</h4><p style="font-size:13px;margin:5px 0;"> Labeled text structures pass verification rules across linguistic testing frameworks.</p><strong>Index: {final_real_weight*100:.1f}% Genuine</strong></div>', unsafe_allow_html=True)
-                
+            
