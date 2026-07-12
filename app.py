@@ -72,13 +72,13 @@ if execution_trigger:
                 tensor_logits = transformer_model(**tokenized_inputs).logits
                 softmax_probabilities = torch.softmax(tensor_logits, dim=1).flatten().tolist()
             
-            # Extract probability element from the list index directly
+            # FIXED: Label 1 is Fake, Label 0 is Real for himel05/fake-news-roberta
             base_transformer_fake_score = softmax_probabilities[1]
             
             # Step 2: Gemini API Integration Validation Layer
             api_key_check = os.environ.get("GEMINI_API_KEY")
             gemini_fake_score = 0.5
-            gemini_reasoning = "External fact check context engine missed key configs."
+            gemini_reasoning = "External fact check context engine running on local fallback defaults."
             
             if api_key_check:
                 try:
@@ -109,5 +109,5 @@ if execution_trigger:
             if final_fake_weight > final_real_weight:
                 st.markdown(f'<div class="verdict-box verdict-fake"><h4 style="color:#ef4444;margin:0;">🚨 MISINFORMATION FLAG</h4><p style="font-size:13px;margin:5px 0;">{gemini_reasoning}</p><strong>Index: {final_fake_weight*100:.1f}% Inaccurate</strong></div>', unsafe_allow_html=True)
             else:
-                st.markdown(f'<div class="verdict-box verdict-real"><h4 style="color:#10b981;margin:0;">✅ VERIFIED ACCURATE</h4><p style="font-size:13px;margin:5px 0;">Content matches global factual parameters. {gemini_reasoning}</p><strong>Index: {final_real_weight*100:.1f}% Genuine</strong></div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="verdict-box verdict-real"><h4 style="color:#10b981;margin:0;">✅ VERIFIED ACCURATE</h4><p style="font-size:13px;margin:5px 0;">{gemini_reasoning}</p><strong>Index: {final_real_weight*100:.1f}% Genuine</strong></div>', unsafe_allow_html=True)
                 
