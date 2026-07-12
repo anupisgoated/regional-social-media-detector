@@ -1,0 +1,8 @@
+streamlit
+transformers
+torch --index-url https://pytorch.org
+sentencepiece
+google-generativeai
+plotly
+pandas
+
